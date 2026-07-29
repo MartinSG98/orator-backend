@@ -9,3 +9,4 @@ Each record answers three questions. What was the situation, what did we decide,
 | [0001](0001-three-separate-repos.md) | Three separate repos | Accepted |
 | [0002](0002-fastapi-for-the-backend.md) | FastAPI for the backend | Accepted |
 | [0003](0003-async-polly-with-s3-staging.md) | Async Polly with S3 staging | Accepted |
+| [0004](0004-dynamic-voice-discovery.md) | Dynamic language and voice discovery | Accepted |
