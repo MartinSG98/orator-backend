@@ -11,3 +11,4 @@ Each record answers three questions. What was the situation, what did we decide,
 | [0003](0003-async-polly-with-s3-staging.md) | Async Polly with S3 staging | Accepted |
 | [0004](0004-dynamic-voice-discovery.md) | Dynamic language and voice discovery | Accepted |
 | [0005](0005-sqlite-and-local-media-storage.md) | SQLite and local media storage | Accepted |
+| [0006](0006-in-process-background-jobs.md) | In-process background jobs | Accepted |

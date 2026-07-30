@@ -29,7 +29,7 @@ Copy `.env.example` to `.env` and fill in the values. Everything has a sensible 
 | Variable | Default | Purpose |
 |---|---|---|
 | `ORATOR_S3_BUCKET` | empty | S3 bucket where Polly stages synthesised audio |
-| `ORATOR_AWS_REGION` | `eu-west-1` | AWS region, chosen because it has neural voices for every supported language |
+| `ORATOR_AWS_REGION` | `eu-west-2` | AWS region. London has full Polly neural and Translate coverage, verified against eu-west-1 |
 | `ORATOR_AWS_PROFILE` | empty | Local dev only, pins a named AWS profile. Leave empty when deployed, the IAM role on the compute provides credentials |
 | `ORATOR_CORS_ORIGIN` | `http://localhost:5173` | Origin the frontend dev server runs on |
 | `ORATOR_DATABASE_URL` | `sqlite:///orator.db` | SQLAlchemy database URL, a local SQLite file by default |
@@ -59,9 +59,19 @@ The stored translation is meant to be reviewed before any audio is generated. `P
 
 `GET /api/documents/{id}/translations` lists a document's translations, `GET /api/translations/{id}` returns one with its text, `DELETE /api/translations/{id}` removes it.
 
+## Speech synthesis
+
+`POST /api/translations/{id}/synthesis` with `{"voice_id": "Lea"}` starts an audio job and returns 202 immediately. The voice must belong to the translation's language, the catalog endpoint tells you which ones do. The job runs in the background: text is chunked at 2800 characters, each chunk becomes one Polly task writing to the S3 staging bucket, the job polls the tasks, downloads the pieces, joins them into one MP3 stored under `media/audio/`, and deletes the staged objects.
+
+`GET /api/jobs/{id}` reports status and per-chunk progress. Once completed, `GET /api/jobs/{id}/audio` serves the MP3.
+
+To voice an untranslated document, create a passthrough translation first (for an English document, "translate" it to `en-GB`, which is free) and synthesise that. This keeps one rule true everywhere: audio always comes from a reviewable text.
+
+Joining multi-chunk audio calls ffmpeg's concat demuxer in stream copy mode, which splices the pieces without re-encoding. Nothing needs to be installed at OS level, the `imageio-ffmpeg` package carries a static ffmpeg binary inside the virtualenv, and a system ffmpeg is preferred automatically when one exists. Single-chunk results skip joining entirely and are copied byte for byte.
+
 ## AWS permissions
 
-The IAM user or role behind the credentials only needs what the implemented features use. So far that is discovery and translation:
+The IAM user or role behind the credentials only needs what the implemented features use:
 
 ```json
 {
@@ -71,13 +81,20 @@ The IAM user or role behind the credentials only needs what the implemented feat
       "Effect": "Allow",
       "Action": [
         "polly:DescribeVoices",
+        "polly:StartSpeechSynthesisTask",
+        "polly:GetSpeechSynthesisTask",
         "translate:ListLanguages",
         "translate:TranslateText"
       ],
       "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": ["s3:PutObject", "s3:GetObject", "s3:DeleteObject"],
+      "Resource": "arn:aws:s3:::<your-staging-bucket>/polly-staging/*"
     }
   ]
 }
 ```
 
-This policy grows with the app. Audio generation will add the Polly synthesis task actions plus S3 access scoped to the staging bucket.
+The S3 statement is scoped to the staging prefix of the one bucket the app uses. Polly writes there with the caller's permissions, so `PutObject` is required even though the app itself only downloads and deletes.

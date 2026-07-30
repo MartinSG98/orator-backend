@@ -8,7 +8,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="ORATOR_", env_file=".env", extra="ignore")
 
     s3_bucket: str = ""  # required for synthesis, checked there rather than at startup
-    aws_region: str = "eu-west-1"
+    aws_region: str = "eu-west-2"
     aws_profile: str = ""  # local dev only, empty means the default boto3 chain (IAM role when deployed)
     cors_origin: str = "http://localhost:5173"
     database_url: str = "sqlite:///orator.db"

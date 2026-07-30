@@ -60,3 +60,38 @@ class TranslationCreate(SQLModel):
 
 class TranslationUpdate(SQLModel):
     text: str
+
+
+class SynthesisJob(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    translation_id: int = Field(foreign_key="translation.id", index=True)
+    voice_id: str
+    engine: str
+    language_code: str
+    status: str = "queued"  # queued, running, completed, failed
+    error: str | None = None
+    total_chunks: int = 0
+    done_chunks: int = 0
+    audio_path: str | None = None  # internal location, never exposed
+    duration_seconds: float | None = None
+    created_at: datetime = Field(default_factory=_utcnow)
+    updated_at: datetime = Field(default_factory=_utcnow)
+
+
+class SynthesisJobOut(SQLModel):
+    id: int
+    translation_id: int
+    voice_id: str
+    engine: str
+    language_code: str
+    status: str
+    error: str | None
+    total_chunks: int
+    done_chunks: int
+    duration_seconds: float | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class SynthesisJobCreate(SQLModel):
+    voice_id: str
