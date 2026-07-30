@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
 from app.db import init_db
-from app.routers import documents, languages
+from app.routers import documents, languages, translations
 
 settings = get_settings()
 
@@ -29,6 +29,7 @@ app.add_middleware(
 
 app.include_router(languages.router)
 app.include_router(documents.router)
+app.include_router(translations.router)
 
 
 @app.get("/api/health")

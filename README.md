@@ -51,9 +51,17 @@ Caching keeps AWS traffic minimal without ever going stale for long. A successfu
 
 The interactive API reference at http://127.0.0.1:8000/docs covers all endpoints.
 
+## Translations
+
+`POST /api/documents/{id}/translations` with `{"language_code": "fr-FR"}` translates the document's text via AWS Translate and stores the result. The source language is auto-detected, and if it already matches the target the text passes through untranslated at no cost, so "translating" an English document to English is a valid no-op. Long documents are split into chunks of up to 4500 characters, breaking on paragraph boundaries where possible and sentence boundaries otherwise, then reassembled.
+
+The stored translation is meant to be reviewed before any audio is generated. `PATCH /api/translations/{id}` with `{"text": "..."}` saves an edited version and marks it as edited. One translation per document and language, a repeat POST returns 409, delete the old one first if you want a fresh machine translation.
+
+`GET /api/documents/{id}/translations` lists a document's translations, `GET /api/translations/{id}` returns one with its text, `DELETE /api/translations/{id}` removes it.
+
 ## AWS permissions
 
-The IAM user or role behind the credentials only needs what the implemented features use. So far that is discovery:
+The IAM user or role behind the credentials only needs what the implemented features use. So far that is discovery and translation:
 
 ```json
 {
@@ -61,11 +69,15 @@ The IAM user or role behind the credentials only needs what the implemented feat
   "Statement": [
     {
       "Effect": "Allow",
-      "Action": ["polly:DescribeVoices", "translate:ListLanguages"],
+      "Action": [
+        "polly:DescribeVoices",
+        "translate:ListLanguages",
+        "translate:TranslateText"
+      ],
       "Resource": "*"
     }
   ]
 }
 ```
 
-This policy grows with the app. Translation will add `translate:TranslateText`, and audio generation will add the Polly synthesis task actions plus S3 access scoped to the staging bucket.
+This policy grows with the app. Audio generation will add the Polly synthesis task actions plus S3 access scoped to the staging bucket.

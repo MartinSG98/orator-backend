@@ -205,3 +205,8 @@ _cache = _CatalogCache()
 def get_catalog() -> tuple[list[dict[str, Any]], str]:
     """Return (languages, source) where source is "aws" or "fallback"."""
     return _cache.get()
+
+
+def get_language(code: str) -> dict[str, Any] | None:
+    languages, _ = get_catalog()
+    return next((lang for lang in languages if lang["code"] == code), None)
