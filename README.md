@@ -63,7 +63,13 @@ The stored translation is meant to be reviewed before any audio is generated. `P
 
 `POST /api/translations/{id}/synthesis` with `{"voice_id": "Lea"}` starts an audio job and returns 202 immediately. The voice must belong to the translation's language, the catalog endpoint tells you which ones do. The job runs in the background: text is chunked at 2800 characters, each chunk becomes one Polly task writing to the S3 staging bucket, the job polls the tasks, downloads the pieces, joins them into one MP3 stored under `media/audio/`, and deletes the staged objects.
 
-`GET /api/jobs/{id}` reports status and per-chunk progress. Once completed, `GET /api/jobs/{id}/audio` serves the MP3.
+`GET /api/jobs/{id}` reports status and per-chunk progress. Once completed, `GET /api/jobs/{id}/audio` serves the MP3. `GET /api/jobs` lists every job newest first, with an optional `translation_id` filter.
+
+## History
+
+`GET /api/documents/{id}/overview` returns the whole story of one document in a single response: the document, its translations, and each translation's synthesis jobs, all newest first. This is what a history view should render from.
+
+Deletes cascade. Removing a translation also removes its jobs and their audio files from disk, removing a document takes its translations, their jobs, the audio, and the stored original with it.
 
 To voice an untranslated document, create a passthrough translation first (for an English document, "translate" it to `en-GB`, which is free) and synthesise that. This keeps one rule true everywhere: audio always comes from a reviewable text.
 

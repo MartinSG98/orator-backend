@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from pathlib import Path
 
 from botocore.exceptions import BotoCoreError, ClientError
 from fastapi import APIRouter, Depends, HTTPException
@@ -7,6 +8,7 @@ from sqlmodel import Session, select
 from app.db import get_session
 from app.models import (
     Document,
+    SynthesisJob,
     Translation,
     TranslationCreate,
     TranslationDetail,
@@ -121,5 +123,14 @@ def delete_translation(
     translation = session.get(Translation, translation_id)
     if translation is None:
         raise HTTPException(404, "translation not found")
+
+    jobs = session.exec(
+        select(SynthesisJob).where(SynthesisJob.translation_id == translation_id)
+    ).all()
+    for job in jobs:
+        if job.audio_path:
+            Path(job.audio_path).unlink(missing_ok=True)
+        session.delete(job)
+
     session.delete(translation)
     session.commit()

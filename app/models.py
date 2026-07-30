@@ -95,3 +95,11 @@ class SynthesisJobOut(SQLModel):
 
 class SynthesisJobCreate(SQLModel):
     voice_id: str
+
+
+class TranslationWithJobs(TranslationDetail):
+    jobs: list[SynthesisJobOut] = []
+
+
+class DocumentOverview(DocumentDetail):
+    translations: list[TranslationWithJobs] = []

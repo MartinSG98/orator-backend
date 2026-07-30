@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from botocore.exceptions import BotoCoreError, ClientError
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from fastapi.responses import FileResponse
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from app.config import get_settings
 from app.db import get_engine, get_session
@@ -123,6 +123,16 @@ def create_synthesis_job(
 
     background.add_task(run_synthesis_job, job.id)
     return job
+
+
+@router.get("/jobs", response_model=list[SynthesisJobOut])
+def list_jobs(
+    translation_id: int | None = None, session: Session = Depends(get_session)
+) -> list[SynthesisJob]:
+    query = select(SynthesisJob).order_by(SynthesisJob.id.desc())
+    if translation_id is not None:
+        query = query.where(SynthesisJob.translation_id == translation_id)
+    return list(session.exec(query).all())
 
 
 @router.get("/jobs/{job_id}", response_model=SynthesisJobOut)
