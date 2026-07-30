@@ -1,4 +1,5 @@
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -10,6 +11,8 @@ class Settings(BaseSettings):
     aws_region: str = "eu-west-1"
     aws_profile: str = ""  # local dev only, empty means the default boto3 chain (IAM role when deployed)
     cors_origin: str = "http://localhost:5173"
+    database_url: str = "sqlite:///orator.db"
+    media_dir: Path = Path("media")
 
 
 @lru_cache

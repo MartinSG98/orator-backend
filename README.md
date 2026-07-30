@@ -32,6 +32,8 @@ Copy `.env.example` to `.env` and fill in the values. Everything has a sensible 
 | `ORATOR_AWS_REGION` | `eu-west-1` | AWS region, chosen because it has neural voices for every supported language |
 | `ORATOR_AWS_PROFILE` | empty | Local dev only, pins a named AWS profile. Leave empty when deployed, the IAM role on the compute provides credentials |
 | `ORATOR_CORS_ORIGIN` | `http://localhost:5173` | Origin the frontend dev server runs on |
+| `ORATOR_DATABASE_URL` | `sqlite:///orator.db` | SQLAlchemy database URL, a local SQLite file by default |
+| `ORATOR_MEDIA_DIR` | `media` | Directory for uploaded documents and generated audio |
 
 ## Supported languages and voices
 
@@ -40,6 +42,14 @@ The backend does not keep a hand-written language table. On the first request it
 Each language carries its real voices with name, gender, and engine. Neural is preferred, standard is the fallback for voices without neural support, and languages Polly can voice but Translate cannot target (Cantonese, for example) come through with a null `translate_code`.
 
 Caching keeps AWS traffic minimal without ever going stale for long. A successful discovery is cached in memory and refreshed after 24 hours. A failed discovery is retried at most every 5 minutes, and between attempts the API serves the last good catalog, or a built-in six-language fallback if there has never been one. So local development works with no AWS setup at all, and adding credentials later gets picked up without a restart.
+
+## Documents
+
+`POST /api/documents` accepts a file upload in `.docx`, `.pdf`, `.txt`, or `.md` format, up to 10 MB. The text is extracted immediately, stored in the database along with a word count, and the original file is kept under `media/documents/`. Uploads with no extractable text are rejected.
+
+`GET /api/documents` lists what has been uploaded, newest first, without the text. `GET /api/documents/{id}` returns a single document including its full extracted text.
+
+The interactive API reference at http://127.0.0.1:8000/docs covers all endpoints.
 
 ## AWS permissions
 
