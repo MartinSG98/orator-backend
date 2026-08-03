@@ -2,6 +2,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile
+from sqlalchemy import func
 from sqlmodel import Session, select
 
 from app.config import get_settings
@@ -64,8 +65,33 @@ async def upload_document(
 
 
 @router.get("", response_model=list[DocumentSummary])
-def list_documents(session: Session = Depends(get_session)) -> list[Document]:
-    return list(session.exec(select(Document).order_by(Document.id.desc())).all())
+def list_documents(session: Session = Depends(get_session)) -> list[DocumentSummary]:
+    documents = session.exec(select(Document).order_by(Document.id.desc())).all()
+    translation_counts = dict(
+        session.exec(
+            select(Translation.document_id, func.count(Translation.id)).group_by(
+                Translation.document_id
+            )
+        ).all()
+    )
+    audio_counts = dict(
+        session.exec(
+            select(Translation.document_id, func.count(SynthesisJob.id))
+            .join(SynthesisJob, SynthesisJob.translation_id == Translation.id)
+            .where(SynthesisJob.status == "completed")
+            .group_by(Translation.document_id)
+        ).all()
+    )
+    return [
+        DocumentSummary.model_validate(
+            document,
+            update={
+                "translation_count": translation_counts.get(document.id, 0),
+                "audio_count": audio_counts.get(document.id, 0),
+            },
+        )
+        for document in documents
+    ]
 
 
 @router.get("/{document_id}", response_model=DocumentDetail)
@@ -104,7 +130,16 @@ def get_document_overview(
                 update={"jobs": [SynthesisJobOut.model_validate(j) for j in jobs]},
             )
         )
-    return DocumentOverview.model_validate(document, update={"translations": with_jobs})
+    return DocumentOverview.model_validate(
+        document,
+        update={
+            "translations": with_jobs,
+            "translation_count": len(with_jobs),
+            "audio_count": sum(
+                1 for t in with_jobs for job in t.jobs if job.status == "completed"
+            ),
+        },
+    )
 
 
 @router.delete("/{document_id}", status_code=204)

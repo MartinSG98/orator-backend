@@ -88,6 +88,8 @@ Caching keeps AWS traffic minimal without ever going stale for long. A successfu
 
 `POST /api/documents` accepts a file upload in `.docx`, `.pdf`, `.txt`, or `.md` format, up to 10 MB. The text is extracted immediately, stored in the database along with a word count, and the original file is kept under `media/documents/`. Uploads with no extractable text are rejected.
 
+The document list carries a translation count and a completed-audio count per document, which is what a list view wants to show without fetching each document's detail.
+
 ## Translations
 
 `POST /api/documents/{id}/translations` with `{"language_code": "fr-FR"}` translates the document's text via AWS Translate and stores the result. The source language is auto-detected, and if it already matches the target the text passes through untranslated at no cost, so "translating" an English document to English is a valid no-op. Long documents are split into chunks of up to 4500 characters, breaking on paragraph boundaries where possible and sentence boundaries otherwise, then reassembled.

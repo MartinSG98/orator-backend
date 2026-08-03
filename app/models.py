@@ -21,6 +21,8 @@ class DocumentSummary(SQLModel):
     filename: str
     word_count: int
     created_at: datetime
+    translation_count: int = 0
+    audio_count: int = 0  # completed synthesis jobs across all translations
 
 
 class DocumentDetail(DocumentSummary):
