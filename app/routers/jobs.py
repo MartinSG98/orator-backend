@@ -2,12 +2,13 @@ import logging
 from datetime import datetime, timezone
 
 from botocore.exceptions import BotoCoreError, ClientError
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Response
+from fastapi.responses import FileResponse, RedirectResponse
 from sqlmodel import Session, select
 
 from app.config import get_settings
 from app.db import get_engine, get_session
+from app.services.storage import get_storage
 from app.models import (
     SynthesisJob,
     SynthesisJobCreate,
@@ -51,14 +52,14 @@ def run_synthesis_job(job_id: int) -> None:
             session.commit()
 
         try:
-            audio_path, duration = synthesize(
+            audio_key, duration = synthesize(
                 translation.text,
                 job.voice_id,
                 job.engine,
                 job.language_code,
                 on_chunk_done=on_chunk_done,
             )
-            job.audio_path = str(audio_path)
+            job.audio_path = audio_key
             job.duration_seconds = duration
             job.status = "completed"
         except (SynthesisError, BotoCoreError, ClientError) as exc:
@@ -144,12 +145,19 @@ def get_job(job_id: int, session: Session = Depends(get_session)) -> SynthesisJo
 
 
 @router.get("/jobs/{job_id}/audio")
-def get_job_audio(job_id: int, session: Session = Depends(get_session)) -> FileResponse:
+def get_job_audio(job_id: int, session: Session = Depends(get_session)) -> Response:
     job = session.get(SynthesisJob, job_id)
     if job is None:
         raise HTTPException(404, "job not found")
     if job.status != "completed" or job.audio_path is None:
         raise HTTPException(409, f"job is {job.status}, audio not available")
 
+    storage = get_storage()
     filename = f"synthesis_{job.id}_{job.language_code}_{job.voice_id}.mp3"
-    return FileResponse(job.audio_path, media_type="audio/mpeg", filename=filename)
+    url = storage.presigned_url(job.audio_path, filename)
+    if url is not None:
+        return RedirectResponse(url, status_code=307)
+    path = storage.local_path(job.audio_path)
+    if path is None or not path.exists():
+        raise HTTPException(404, "audio file is missing from storage")
+    return FileResponse(path, media_type="audio/mpeg", filename=filename)

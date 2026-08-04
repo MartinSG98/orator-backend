@@ -24,6 +24,7 @@ from uuid import uuid4
 
 from app.config import get_settings
 from app.services import aws
+from app.services.storage import get_storage
 from app.services.translate import chunk_text
 
 SYNTH_CHUNK_LIMIT = 2800  # Polly's practical per-task limit for neural voices is 3000
@@ -139,8 +140,12 @@ def synthesize(
     engine: str,
     language_code: str,
     on_chunk_done=None,
-) -> tuple[Path, float | None]:
-    """Run the full pipeline and return (audio_path, duration_seconds)."""
+) -> tuple[str, float | None]:
+    """Run the full pipeline and return (audio_key, duration_seconds).
+
+    The final MP3 goes through the storage layer, so the returned key is
+    what job rows should carry, not a filesystem path.
+    """
     settings = get_settings()
     if not settings.s3_bucket:
         raise SynthesisError(
@@ -163,9 +168,7 @@ def synthesize(
         start_task(polly, chunk, voice_id, engine, language_code) for chunk in chunks
     ]
 
-    audio_dir = settings.media_dir / "audio"
-    audio_dir.mkdir(parents=True, exist_ok=True)
-    output_path = audio_dir / f"{uuid4().hex}.mp3"
+    audio_key = f"audio/{uuid4().hex}.mp3"
 
     s3_keys: list[str] = []
     with tempfile.TemporaryDirectory() as tmp_dir:
@@ -178,9 +181,11 @@ def synthesize(
             chunk_paths.append(local)
             if on_chunk_done is not None:
                 on_chunk_done(index + 1)
+        output_path = Path(tmp_dir) / "joined.mp3"
         duration = join_chunks(chunk_paths, output_path)
+        get_storage().save_file(audio_key, output_path)
 
     for key in s3_keys:
         s3.delete_object(Bucket=settings.s3_bucket, Key=key)
 
-    return output_path, duration
+    return audio_key, duration

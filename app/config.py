@@ -7,7 +7,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="ORATOR_", env_file=".env", extra="ignore")
 
-    s3_bucket: str = ""  # required for synthesis, checked there rather than at startup
+    runtime: str = "local"  # "local" or "aws", selects the storage/persistence/jobs seams per ADR 0007
+    s3_bucket: str = ""  # Polly staging bucket, required for synthesis, checked there rather than at startup
+    media_bucket: str = ""  # media bucket, required in the aws runtime
     aws_region: str = "eu-west-2"
     aws_profile: str = ""  # local dev only, empty means the default boto3 chain (IAM role when deployed)
     cors_origin: str = "http://localhost:5173"

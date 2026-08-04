@@ -39,7 +39,9 @@ Copy `.env.example` to `.env` and fill in the values. Everything has a sensible 
 
 | Variable | Default | Purpose |
 |---|---|---|
+| `ORATOR_RUNTIME` | `local` | `local` or `aws`, selects storage, persistence and job execution per ADR 0007 |
 | `ORATOR_S3_BUCKET` | empty | S3 bucket where Polly stages synthesised audio |
+| `ORATOR_MEDIA_BUCKET` | empty | S3 bucket for documents and finished audio, aws runtime only |
 | `ORATOR_AWS_REGION` | `eu-west-2` | AWS region. London has full Polly neural and Translate coverage, verified against eu-west-1 |
 | `ORATOR_AWS_PROFILE` | empty | Local dev only, pins a named AWS profile. Leave empty when deployed, the IAM role on the compute provides credentials |
 | `ORATOR_CORS_ORIGIN` | `http://localhost:5173` | Origin the frontend dev server runs on |

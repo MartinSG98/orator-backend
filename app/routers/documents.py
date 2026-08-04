@@ -5,7 +5,6 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile
 from sqlalchemy import func
 from sqlmodel import Session, select
 
-from app.config import get_settings
 from app.db import get_session
 from app.models import (
     Document,
@@ -18,6 +17,7 @@ from app.models import (
     TranslationWithJobs,
 )
 from app.services.extract import SUPPORTED_EXTENSIONS, ExtractionError, extract_text
+from app.services.storage import get_storage
 
 router = APIRouter(prefix="/api/documents", tags=["documents"])
 
@@ -47,14 +47,12 @@ async def upload_document(
     if not text.strip():
         raise HTTPException(400, "no extractable text in file")
 
-    documents_dir = get_settings().media_dir / "documents"
-    documents_dir.mkdir(parents=True, exist_ok=True)
-    stored_path = documents_dir / f"{uuid4().hex}{suffix}"
-    stored_path.write_bytes(data)
+    key = f"documents/{uuid4().hex}{suffix}"
+    get_storage().save(key, data)
 
     document = Document(
         filename=filename,
-        stored_path=str(stored_path),
+        stored_path=key,
         text=text,
         word_count=len(text.split()),
     )
@@ -149,6 +147,7 @@ def delete_document(document_id: int, session: Session = Depends(get_session)) -
     if document is None:
         raise HTTPException(404, "document not found")
 
+    storage = get_storage()
     translations = session.exec(
         select(Translation).where(Translation.document_id == document_id)
     ).all()
@@ -158,10 +157,10 @@ def delete_document(document_id: int, session: Session = Depends(get_session)) -
         ).all()
         for job in jobs:
             if job.audio_path:
-                Path(job.audio_path).unlink(missing_ok=True)
+                storage.delete(job.audio_path)
             session.delete(job)
         session.delete(translation)
 
-    Path(document.stored_path).unlink(missing_ok=True)
+    storage.delete(document.stored_path)
     session.delete(document)
     session.commit()
