@@ -2,18 +2,15 @@ from datetime import datetime, timezone
 
 from botocore.exceptions import BotoCoreError, ClientError
 from fastapi import APIRouter, Depends, HTTPException
-from sqlmodel import Session, select
 
-from app.db import get_session
 from app.models import (
-    Document,
-    SynthesisJob,
     Translation,
     TranslationCreate,
     TranslationDetail,
     TranslationSummary,
     TranslationUpdate,
 )
+from app.repository import Repository, get_repository
 from app.services.storage import get_storage
 from app.services.translate import translate_document
 from app.services.voice_catalog import get_language
@@ -27,9 +24,9 @@ router = APIRouter(prefix="/api", tags=["translations"])
     status_code=201,
 )
 def create_translation(
-    document_id: int, body: TranslationCreate, session: Session = Depends(get_session)
+    document_id: int, body: TranslationCreate, repo: Repository = Depends(get_repository)
 ) -> Translation:
-    document = session.get(Document, document_id)
+    document = repo.get_document(document_id)
     if document is None:
         raise HTTPException(404, "document not found")
 
@@ -39,12 +36,7 @@ def create_translation(
     if language["translate_code"] is None:
         raise HTTPException(400, f"'{body.language_code}' cannot be translated into")
 
-    existing = session.exec(
-        select(Translation)
-        .where(Translation.document_id == document_id)
-        .where(Translation.language_code == body.language_code)
-    ).first()
-    if existing is not None:
+    if repo.find_translation(document_id, body.language_code) is not None:
         raise HTTPException(
             409,
             f"translation to '{body.language_code}' already exists, "
@@ -56,17 +48,15 @@ def create_translation(
     except (BotoCoreError, ClientError) as exc:
         raise HTTPException(502, f"translation failed: {exc}") from exc
 
-    translation = Translation(
-        document_id=document_id,
-        language_code=body.language_code,
-        translate_code=language["translate_code"],
-        detected_source=result.detected_source,
-        text=result.text,
+    return repo.add_translation(
+        Translation(
+            document_id=document_id,
+            language_code=body.language_code,
+            translate_code=language["translate_code"],
+            detected_source=result.detected_source,
+            text=result.text,
+        )
     )
-    session.add(translation)
-    session.commit()
-    session.refresh(translation)
-    return translation
 
 
 @router.get(
@@ -74,24 +64,18 @@ def create_translation(
     response_model=list[TranslationSummary],
 )
 def list_translations(
-    document_id: int, session: Session = Depends(get_session)
+    document_id: int, repo: Repository = Depends(get_repository)
 ) -> list[Translation]:
-    if session.get(Document, document_id) is None:
+    if repo.get_document(document_id) is None:
         raise HTTPException(404, "document not found")
-    return list(
-        session.exec(
-            select(Translation)
-            .where(Translation.document_id == document_id)
-            .order_by(Translation.id.desc())
-        ).all()
-    )
+    return repo.list_translations(document_id)
 
 
 @router.get("/translations/{translation_id}", response_model=TranslationDetail)
 def get_translation(
-    translation_id: int, session: Session = Depends(get_session)
+    translation_id: int, repo: Repository = Depends(get_repository)
 ) -> Translation:
-    translation = session.get(Translation, translation_id)
+    translation = repo.get_translation(translation_id)
     if translation is None:
         raise HTTPException(404, "translation not found")
     return translation
@@ -99,9 +83,11 @@ def get_translation(
 
 @router.patch("/translations/{translation_id}", response_model=TranslationDetail)
 def update_translation(
-    translation_id: int, body: TranslationUpdate, session: Session = Depends(get_session)
+    translation_id: int,
+    body: TranslationUpdate,
+    repo: Repository = Depends(get_repository),
 ) -> Translation:
-    translation = session.get(Translation, translation_id)
+    translation = repo.get_translation(translation_id)
     if translation is None:
         raise HTTPException(404, "translation not found")
     if not body.text.strip():
@@ -110,28 +96,21 @@ def update_translation(
     translation.text = body.text
     translation.edited = True
     translation.updated_at = datetime.now(timezone.utc)
-    session.add(translation)
-    session.commit()
-    session.refresh(translation)
-    return translation
+    return repo.save_translation(translation)
 
 
 @router.delete("/translations/{translation_id}", status_code=204)
 def delete_translation(
-    translation_id: int, session: Session = Depends(get_session)
+    translation_id: int, repo: Repository = Depends(get_repository)
 ) -> None:
-    translation = session.get(Translation, translation_id)
+    translation = repo.get_translation(translation_id)
     if translation is None:
         raise HTTPException(404, "translation not found")
 
     storage = get_storage()
-    jobs = session.exec(
-        select(SynthesisJob).where(SynthesisJob.translation_id == translation_id)
-    ).all()
-    for job in jobs:
+    for job in repo.list_jobs(translation_id):
         if job.audio_path:
             storage.delete(job.audio_path)
-        session.delete(job)
+        repo.delete_job(job.id)
 
-    session.delete(translation)
-    session.commit()
+    repo.delete_translation(translation_id)

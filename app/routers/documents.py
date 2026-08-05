@@ -2,20 +2,16 @@ from pathlib import Path
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile
-from sqlalchemy import func
-from sqlmodel import Session, select
 
-from app.db import get_session
 from app.models import (
     Document,
     DocumentDetail,
     DocumentOverview,
     DocumentSummary,
-    SynthesisJob,
     SynthesisJobOut,
-    Translation,
     TranslationWithJobs,
 )
+from app.repository import Repository, get_repository
 from app.services.extract import SUPPORTED_EXTENSIONS, ExtractionError, extract_text
 from app.services.storage import get_storage
 
@@ -26,7 +22,7 @@ MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 
 @router.post("", response_model=DocumentDetail, status_code=201)
 async def upload_document(
-    file: UploadFile, session: Session = Depends(get_session)
+    file: UploadFile, repo: Repository = Depends(get_repository)
 ) -> Document:
     filename = file.filename or ""
     suffix = Path(filename).suffix.lower()
@@ -50,51 +46,26 @@ async def upload_document(
     key = f"documents/{uuid4().hex}{suffix}"
     get_storage().save(key, data)
 
-    document = Document(
-        filename=filename,
-        stored_path=key,
-        text=text,
-        word_count=len(text.split()),
+    return repo.add_document(
+        Document(
+            filename=filename,
+            stored_path=key,
+            text=text,
+            word_count=len(text.split()),
+        )
     )
-    session.add(document)
-    session.commit()
-    session.refresh(document)
-    return document
 
 
 @router.get("", response_model=list[DocumentSummary])
-def list_documents(session: Session = Depends(get_session)) -> list[DocumentSummary]:
-    documents = session.exec(select(Document).order_by(Document.id.desc())).all()
-    translation_counts = dict(
-        session.exec(
-            select(Translation.document_id, func.count(Translation.id)).group_by(
-                Translation.document_id
-            )
-        ).all()
-    )
-    audio_counts = dict(
-        session.exec(
-            select(Translation.document_id, func.count(SynthesisJob.id))
-            .join(SynthesisJob, SynthesisJob.translation_id == Translation.id)
-            .where(SynthesisJob.status == "completed")
-            .group_by(Translation.document_id)
-        ).all()
-    )
-    return [
-        DocumentSummary.model_validate(
-            document,
-            update={
-                "translation_count": translation_counts.get(document.id, 0),
-                "audio_count": audio_counts.get(document.id, 0),
-            },
-        )
-        for document in documents
-    ]
+def list_documents(repo: Repository = Depends(get_repository)) -> list[DocumentSummary]:
+    return repo.list_documents()
 
 
 @router.get("/{document_id}", response_model=DocumentDetail)
-def get_document(document_id: int, session: Session = Depends(get_session)) -> Document:
-    document = session.get(Document, document_id)
+def get_document(
+    document_id: int, repo: Repository = Depends(get_repository)
+) -> Document:
+    document = repo.get_document(document_id)
     if document is None:
         raise HTTPException(404, "document not found")
     return document
@@ -102,32 +73,25 @@ def get_document(document_id: int, session: Session = Depends(get_session)) -> D
 
 @router.get("/{document_id}/overview", response_model=DocumentOverview)
 def get_document_overview(
-    document_id: int, session: Session = Depends(get_session)
+    document_id: int, repo: Repository = Depends(get_repository)
 ) -> DocumentOverview:
     """The document with its translations and their jobs, in one response."""
-    document = session.get(Document, document_id)
+    document = repo.get_document(document_id)
     if document is None:
         raise HTTPException(404, "document not found")
 
-    translations = session.exec(
-        select(Translation)
-        .where(Translation.document_id == document_id)
-        .order_by(Translation.id.desc())
-    ).all()
-
-    with_jobs = []
-    for translation in translations:
-        jobs = session.exec(
-            select(SynthesisJob)
-            .where(SynthesisJob.translation_id == translation.id)
-            .order_by(SynthesisJob.id.desc())
-        ).all()
-        with_jobs.append(
-            TranslationWithJobs.model_validate(
-                translation,
-                update={"jobs": [SynthesisJobOut.model_validate(j) for j in jobs]},
-            )
+    with_jobs = [
+        TranslationWithJobs.model_validate(
+            translation,
+            update={
+                "jobs": [
+                    SynthesisJobOut.model_validate(job)
+                    for job in repo.list_jobs(translation.id)
+                ]
+            },
         )
+        for translation in repo.list_translations(document_id)
+    ]
     return DocumentOverview.model_validate(
         document,
         update={
@@ -141,26 +105,21 @@ def get_document_overview(
 
 
 @router.delete("/{document_id}", status_code=204)
-def delete_document(document_id: int, session: Session = Depends(get_session)) -> None:
+def delete_document(
+    document_id: int, repo: Repository = Depends(get_repository)
+) -> None:
     """Delete the document and everything hanging off it, files included."""
-    document = session.get(Document, document_id)
+    document = repo.get_document(document_id)
     if document is None:
         raise HTTPException(404, "document not found")
 
     storage = get_storage()
-    translations = session.exec(
-        select(Translation).where(Translation.document_id == document_id)
-    ).all()
-    for translation in translations:
-        jobs = session.exec(
-            select(SynthesisJob).where(SynthesisJob.translation_id == translation.id)
-        ).all()
-        for job in jobs:
+    for translation in repo.list_translations(document_id):
+        for job in repo.list_jobs(translation.id):
             if job.audio_path:
                 storage.delete(job.audio_path)
-            session.delete(job)
-        session.delete(translation)
+            repo.delete_job(job.id)
+        repo.delete_translation(translation.id)
 
     storage.delete(document.stored_path)
-    session.delete(document)
-    session.commit()
+    repo.delete_document(document_id)
