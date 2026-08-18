@@ -1,7 +1,7 @@
 # 0005. SQLite and local media storage
 
 Date: 2026-07-30
-Status: Accepted
+Status: Accepted, partially superseded by [0007](0007-dual-runtime-serverless-architecture.md)
 
 ## Context
 

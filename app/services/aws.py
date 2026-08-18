@@ -13,10 +13,17 @@ import boto3
 from app.config import get_settings
 
 
-def client(service: str) -> Any:
+def _session() -> boto3.session.Session:
     settings = get_settings()
-    session = boto3.session.Session(
+    return boto3.session.Session(
         profile_name=settings.aws_profile or None,
         region_name=settings.aws_region,
     )
-    return session.client(service)
+
+
+def client(service: str) -> Any:
+    return _session().client(service)
+
+
+def resource(service: str) -> Any:
+    return _session().resource(service)

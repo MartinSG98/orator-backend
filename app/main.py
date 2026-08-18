@@ -12,8 +12,11 @@ settings = get_settings()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    settings.media_dir.mkdir(parents=True, exist_ok=True)
-    init_db()
+    # Local-runtime bootstrap only. On Lambda the filesystem is read-only
+    # and persistence is DynamoDB, there is nothing to create.
+    if settings.runtime == "local":
+        settings.media_dir.mkdir(parents=True, exist_ok=True)
+        init_db()
     yield
 
 

@@ -1,10 +1,11 @@
 """Speech synthesis via Polly async tasks, staged through S3.
 
-Each chunk of text becomes one start_speech_synthesis_task call. Polly
-writes the resulting MP3s to the staging bucket, the job polls the tasks
-to completion, downloads the pieces, joins them, and stores the final MP3
-locally under the media directory. Staged S3 objects are deleted after a
-successful download.
+The pipeline is three resumable steps, so both runtimes can drive it:
+start_synthesis fires one Polly task per text chunk, check_tasks reports
+how far they got, finalize_synthesis downloads the pieces, joins them, and
+stores the final MP3 through the storage layer. The local runtime composes
+the three in synthesize() with a polling loop, the aws runtime spreads them
+across Step Functions states.
 
 A single-chunk result is copied as-is. Multi-chunk results are joined with
 ffmpeg's concat demuxer in stream copy mode, which splices the MP3s without
@@ -18,22 +19,33 @@ import shutil
 import subprocess
 import tempfile
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
 from uuid import uuid4
 
 from app.config import get_settings
 from app.services import aws
+from app.services.storage import get_storage
 from app.services.translate import chunk_text
 
 SYNTH_CHUNK_LIMIT = 2800  # Polly's practical per-task limit for neural voices is 3000
 S3_PREFIX = "polly-staging/"
 POLL_INTERVAL_SECONDS = 5
-POLL_TIMEOUT_SECONDS = 300
+POLL_BASE_TIMEOUT_SECONDS = 300
+POLL_PER_CHUNK_TIMEOUT_SECONDS = 30
 
 
 class SynthesisError(RuntimeError):
     pass
+
+
+@dataclass(frozen=True)
+class TaskProgress:
+    total: int
+    completed: int
+    failed_reason: str | None
+    output_uris: list[str] | None  # set only once every task has completed
 
 
 def ffmpeg_path() -> str | None:
@@ -67,19 +79,108 @@ def start_task(polly, text: str, voice_id: str, engine: str, language_code: str)
     return response["SynthesisTask"]["TaskId"]
 
 
-def poll_task(polly, task_id: str) -> str:
-    """Wait for a task to finish and return its S3 output URI."""
-    deadline = time.monotonic() + POLL_TIMEOUT_SECONDS
-    while time.monotonic() < deadline:
+def start_synthesis(
+    text: str, voice_id: str, engine: str, language_code: str
+) -> list[str]:
+    """Chunk the text and fire one Polly task per chunk, returning task ids."""
+    settings = get_settings()
+    if not settings.s3_bucket:
+        raise SynthesisError("no S3 staging bucket configured, set ORATOR_S3_BUCKET")
+
+    chunks = chunk_text(text, limit=SYNTH_CHUNK_LIMIT)
+    if not chunks:
+        raise SynthesisError("nothing to synthesise")
+    if len(chunks) > 1 and not ffmpeg_available():
+        raise SynthesisError(
+            "ffmpeg is required to join audio for documents this long, "
+            "install it and retry"
+        )
+
+    polly = aws.client("polly")
+    return [
+        start_task(polly, chunk, voice_id, engine, language_code) for chunk in chunks
+    ]
+
+
+def check_tasks(task_ids: list[str]) -> TaskProgress:
+    """One polling round over every task."""
+    polly = aws.client("polly")
+    uris: list[str | None] = []
+    completed = 0
+    failed_reason: str | None = None
+    for task_id in task_ids:
         task = polly.get_speech_synthesis_task(TaskId=task_id)["SynthesisTask"]
         status = task["TaskStatus"]
         if status == "completed":
-            return task["OutputUri"]
-        if status == "failed":
-            reason = task.get("TaskStatusReason", "no reason given")
-            raise SynthesisError(f"Polly task {task_id} failed: {reason}")
+            completed += 1
+            uris.append(task["OutputUri"])
+        elif status == "failed":
+            failed_reason = task.get("TaskStatusReason", "no reason given")
+            uris.append(None)
+        else:
+            uris.append(None)
+    all_done = completed == len(task_ids)
+    return TaskProgress(
+        total=len(task_ids),
+        completed=completed,
+        failed_reason=failed_reason,
+        output_uris=[uri for uri in uris if uri is not None] if all_done else None,
+    )
+
+
+def finalize_synthesis(output_uris: list[str]) -> tuple[str, float | None]:
+    """Download the staged pieces, join, store, clean up.
+
+    Returns (audio_key, duration_seconds). The key is what job rows carry.
+    """
+    settings = get_settings()
+    s3 = aws.client("s3")
+    audio_key = f"audio/{uuid4().hex}.mp3"
+    s3_keys = [s3_key_from_uri(uri) for uri in output_uris]
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        chunk_paths: list[Path] = []
+        for index, key in enumerate(s3_keys):
+            local = Path(tmp_dir) / f"chunk_{index:04d}.mp3"
+            s3.download_file(settings.s3_bucket, key, str(local))
+            chunk_paths.append(local)
+        output_path = Path(tmp_dir) / "joined.mp3"
+        duration = join_chunks(chunk_paths, output_path)
+        get_storage().save_file(audio_key, output_path)
+
+    for key in s3_keys:
+        s3.delete_object(Bucket=settings.s3_bucket, Key=key)
+
+    return audio_key, duration
+
+
+def synthesize(
+    text: str,
+    voice_id: str,
+    engine: str,
+    language_code: str,
+    on_chunk_done=None,
+) -> tuple[str, float | None]:
+    """The local composition: start, poll to completion, finalize."""
+    task_ids = start_synthesis(text, voice_id, engine, language_code)
+    deadline = (
+        time.monotonic()
+        + POLL_BASE_TIMEOUT_SECONDS
+        + POLL_PER_CHUNK_TIMEOUT_SECONDS * len(task_ids)
+    )
+    reported = 0
+    while True:
+        progress = check_tasks(task_ids)
+        if progress.failed_reason is not None:
+            raise SynthesisError(f"Polly task failed: {progress.failed_reason}")
+        if on_chunk_done is not None and progress.completed != reported:
+            reported = progress.completed
+            on_chunk_done(reported)
+        if progress.output_uris is not None:
+            return finalize_synthesis(progress.output_uris)
+        if time.monotonic() > deadline:
+            raise SynthesisError("Polly tasks timed out")
         time.sleep(POLL_INTERVAL_SECONDS)
-    raise SynthesisError(f"Polly task {task_id} timed out after {POLL_TIMEOUT_SECONDS}s")
 
 
 def s3_key_from_uri(output_uri: str) -> str:
@@ -131,56 +232,3 @@ def _duration_or_none(path: Path) -> float | None:
         return None
     hours, minutes, seconds = times[-1]
     return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
-
-
-def synthesize(
-    text: str,
-    voice_id: str,
-    engine: str,
-    language_code: str,
-    on_chunk_done=None,
-) -> tuple[Path, float | None]:
-    """Run the full pipeline and return (audio_path, duration_seconds)."""
-    settings = get_settings()
-    if not settings.s3_bucket:
-        raise SynthesisError(
-            "no S3 staging bucket configured, set ORATOR_S3_BUCKET"
-        )
-
-    chunks = chunk_text(text, limit=SYNTH_CHUNK_LIMIT)
-    if not chunks:
-        raise SynthesisError("nothing to synthesise")
-    if len(chunks) > 1 and not ffmpeg_available():
-        raise SynthesisError(
-            "ffmpeg is required to join audio for documents this long, "
-            "install it and retry"
-        )
-
-    polly = aws.client("polly")
-    s3 = aws.client("s3")
-
-    task_ids = [
-        start_task(polly, chunk, voice_id, engine, language_code) for chunk in chunks
-    ]
-
-    audio_dir = settings.media_dir / "audio"
-    audio_dir.mkdir(parents=True, exist_ok=True)
-    output_path = audio_dir / f"{uuid4().hex}.mp3"
-
-    s3_keys: list[str] = []
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        chunk_paths: list[Path] = []
-        for index, task_id in enumerate(task_ids):
-            key = s3_key_from_uri(poll_task(polly, task_id))
-            s3_keys.append(key)
-            local = Path(tmp_dir) / f"chunk_{index:04d}.mp3"
-            s3.download_file(settings.s3_bucket, key, str(local))
-            chunk_paths.append(local)
-            if on_chunk_done is not None:
-                on_chunk_done(index + 1)
-        duration = join_chunks(chunk_paths, output_path)
-
-    for key in s3_keys:
-        s3.delete_object(Bucket=settings.s3_bucket, Key=key)
-
-    return output_path, duration
