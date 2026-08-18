@@ -33,6 +33,20 @@ The API starts on http://127.0.0.1:8000. Check it is alive at http://127.0.0.1:8
 
 No AWS setup is needed just to run it. Uploading and browsing work offline, languages fall back to a small built-in catalog, and only translation and audio generation require credentials.
 
+## The two runtimes
+
+The backend runs in one of two modes, selected by `ORATOR_RUNTIME`, per [ADR 0007](docs/adr/0007-dual-runtime-serverless-architecture.md).
+
+`local` is the default and what uvicorn gives you: SQLite for data, the `media/` folder for files, a background thread for audio jobs. Nothing beyond this repo is needed.
+
+`aws` is what the Terraform module configures on the deployed Lambdas: DynamoDB for data, S3 with presigned URLs for files, a Step Functions state machine for audio jobs. The API and the three state handlers (`synth_start`, `synth_check`, `synth_finalize`) are entry points in `app/lambda_handlers.py`, all served by one deployment artifact, and the state machine contract is documented in that module. The API contract is identical in both modes, the frontend cannot tell them apart.
+
+| Seam | local | aws |
+|---|---|---|
+| Persistence | SQLite file | DynamoDB, single-table |
+| Media | `media/` folder, API serves the bytes | S3, API redirects to presigned URLs |
+| Audio jobs | background thread | Step Functions: start, poll, finalize |
+
 ## Configuration
 
 Copy `.env.example` to `.env` and fill in the values. Everything has a sensible default except the S3 bucket, which is only needed once audio generation is involved.
@@ -102,7 +116,7 @@ The stored translation is meant to be reviewed before any audio is generated. `P
 
 ## Speech synthesis
 
-`POST /api/translations/{id}/synthesis` with `{"voice_id": "Lea"}` starts an audio job and returns 202 immediately. The voice must belong to the translation's language, the catalog endpoint tells you which ones do. The job runs in the background: text is chunked at 2800 characters, each chunk becomes one Polly task writing to the S3 staging bucket, the job polls the tasks, downloads the pieces, joins them into one MP3 stored under `media/audio/`, and deletes the staged objects.
+`POST /api/translations/{id}/synthesis` with `{"voice_id": "Lea"}` starts an audio job and returns 202 immediately. The voice must belong to the translation's language, the catalog endpoint tells you which ones do. The job runs in the background: text is chunked at 2800 characters, each chunk becomes one Polly task writing to the S3 staging bucket, the job polls the tasks, downloads the pieces, joins them into one MP3 stored through the media storage (the `media/` folder locally, S3 when deployed), and deletes the staged objects.
 
 To voice an untranslated document, create a passthrough translation first (for an English document, "translate" it to `en-GB`, which is free) and synthesise that. This keeps one rule true everywhere: audio always comes from a reviewable text.
 
@@ -116,7 +130,7 @@ Deletes cascade. Removing a translation also removes its jobs and their audio fi
 
 ## AWS permissions
 
-The IAM user or role behind the credentials only needs what the implemented features use:
+For local development, the IAM user behind the credentials only needs what the features you exercise use:
 
 ```json
 {
@@ -143,3 +157,5 @@ The IAM user or role behind the credentials only needs what the implemented feat
 ```
 
 The S3 statement is scoped to the staging prefix of the one bucket the app uses. Polly writes there with the caller's permissions, so `PutObject` is required even though the app itself only downloads and deletes.
+
+The deployed runtime needs more, DynamoDB, the media bucket, and Step Functions on top, but that role is provisioned and scoped by the Terraform module, not attached by hand.
