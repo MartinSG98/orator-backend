@@ -204,5 +204,7 @@ class SqliteRepository(Repository):
 def get_repository() -> Repository:
     settings = get_settings()
     if settings.runtime == "aws":
-        raise RuntimeError("DynamoDB repository lands with the next commit")
+        from app.repository_dynamodb import DynamoRepository
+
+        return DynamoRepository(settings.table_name)
     return SqliteRepository()
