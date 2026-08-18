@@ -1,65 +1,16 @@
-import logging
-from datetime import datetime, timezone
-
-from botocore.exceptions import BotoCoreError, ClientError
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Response
 from fastapi.responses import FileResponse, RedirectResponse
 
 from app.config import get_settings
 from app.models import SynthesisJob, SynthesisJobCreate, SynthesisJobOut
 from app.repository import Repository, get_repository
+from app.services.job_runner import get_job_runner
 from app.services.storage import get_storage
-from app.services.synthesize import (
-    SYNTH_CHUNK_LIMIT,
-    SynthesisError,
-    ffmpeg_available,
-    synthesize,
-)
+from app.services.synthesize import SYNTH_CHUNK_LIMIT, ffmpeg_available
 from app.services.translate import chunk_text
 from app.services.voice_catalog import get_language
 
-logger = logging.getLogger(__name__)
-
 router = APIRouter(prefix="/api", tags=["synthesis"])
-
-
-def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
-
-
-def run_synthesis_job(job_id: int) -> None:
-    """Executed in the background by the local runtime."""
-    repo = get_repository()
-    job = repo.get_job(job_id)
-    if job is None:
-        return
-    translation = repo.get_translation(job.translation_id)
-    job.status = "running"
-    job.updated_at = _utcnow()
-    job = repo.save_job(job)
-
-    def on_chunk_done(done: int) -> None:
-        job.done_chunks = done
-        job.updated_at = _utcnow()
-        repo.save_job(job)
-
-    try:
-        audio_key, duration = synthesize(
-            translation.text,
-            job.voice_id,
-            job.engine,
-            job.language_code,
-            on_chunk_done=on_chunk_done,
-        )
-        job.audio_path = audio_key
-        job.duration_seconds = duration
-        job.status = "completed"
-    except (SynthesisError, BotoCoreError, ClientError) as exc:
-        logger.warning("synthesis job %d failed: %s", job_id, exc)
-        job.status = "failed"
-        job.error = str(exc)[:500]
-    job.updated_at = _utcnow()
-    repo.save_job(job)
 
 
 @router.post(
@@ -70,7 +21,6 @@ def run_synthesis_job(job_id: int) -> None:
 def create_synthesis_job(
     translation_id: int,
     body: SynthesisJobCreate,
-    background: BackgroundTasks,
     repo: Repository = Depends(get_repository),
 ) -> SynthesisJob:
     translation = repo.get_translation(translation_id)
@@ -112,7 +62,7 @@ def create_synthesis_job(
         )
     )
 
-    background.add_task(run_synthesis_job, job.id)
+    get_job_runner().dispatch(job.id)
     return job
 
 
